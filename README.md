@@ -1,2 +1,3 @@
 # learn-go
-Go exercise
+Go exercises
+https://astaxie.gitbooks.io/build-web-application-with-golang
