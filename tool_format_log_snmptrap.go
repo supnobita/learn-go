@@ -112,21 +112,21 @@ func SendMessageToKafka(time string, msg string, p *kafka.Producer) {
 	p.Produce(&kafkaMsg, nil)
 }
 
-func reopenLogFile(trapfile *os.File, r *bufio.Reader, offset int64) bool {
-	if isreopenfile {
-		fmt.Println("reopen file " + snmptrappath)
-		trapfile, err := os.Open(snmptrappath)
-		if err != nil {
-			panic(err)
-		}
-		trapfile.Seek(0, 0)
-		r = bufio.NewReader(trapfile)
-		//change status
-		isreopenfile = false
-		return true
-	}
-	return true
-}
+// func reopenLogFile(trapfile *os.File, r *bufio.Reader, offset int64) bool {
+// 	if isreopenfile {
+// 		fmt.Println("reopen file " + snmptrappath)
+// 		trapfile, err := os.Open(snmptrappath)
+// 		if err != nil {
+// 			panic(err)
+// 		}
+// 		trapfile.Seek(0, 0)
+// 		r = bufio.NewReader(trapfile)
+// 		//change status
+// 		isreopenfile = false
+// 		return true
+// 	}
+// 	return true
+// }
 
 // func CheckTimeAndRotateLog(isrotate bool, trapfile *os.File, offsetfile *os.File, r *bufio.Reader) bool {
 // 	t := time.Now()
@@ -151,53 +151,46 @@ func reopenLogFile(trapfile *os.File, r *bufio.Reader, offset int64) bool {
 // 	return false
 // }
 
-func CheckTimeAndRotateLog(isrotate bool, trapfile *os.File, offsetfile *os.File, r *bufio.Reader) bool {
-	t := time.Now()
-	h := t.Hour()
-	m := t.Minute()
+// func CheckTimeAndRotateLog(isrotate bool, trapfile *os.File, offsetfile *os.File, r *bufio.Reader) bool {
+// 	t := time.Now()
+// 	h := t.Hour()
+// 	m := t.Minute()
 
-	if h == HOUR_TO_TICK && m == MINUTE_TO_TICK && isrotate == false {
-		err := rotatelog(trapfile)
-		if err == nil {
-			fmt.Println("Rename old log")
-			writeFileOffset(offsetfile, 0)
-			offset = 0
-			//fmt.Println("Changed offset to 0 and wrote to file")
-			//isreopenfile = true
-			//return true
-			os.Exit(0)
-		}
-	} else if h == HOUR_TO_TICK && m == MINUTE_TO_TICK && isrotate == true {
-		return true
-	} else {
-		return false
-	}
-	return false
-}
+// 	if h == HOUR_TO_TICK && m == MINUTE_TO_TICK && isrotate == false {
+// 		err := rotatelog(trapfile)
+// 		if err == nil {
+// 			fmt.Println("Rename old log")
+// 			writeFileOffset(offsetfile, 0)
+// 			offset = 0
+// 			//fmt.Println("Changed offset to 0 and wrote to file")
+// 			//isreopenfile = true
+// 			//return true
+// 			os.Exit(0)
+// 		}
+// 	} else if h == HOUR_TO_TICK && m == MINUTE_TO_TICK && isrotate == true {
+// 		return true
+// 	} else {
+// 		return false
+// 	}
+// 	return false
+// }
 
-func rotatelog(trapfile *os.File) error {
-	t := time.Now()
-	err := trapfile.Close()
-	if err != nil {
-		return err
-	}
-	err = os.Rename(snmptrappath, snmptrappath+"-"+t.Format("20060102"))
-	if err != nil {
-		//reopen file
-		fmt.Println("reopen file")
-		trapfile, _ = os.Open(snmptrappath)
-	}
-	return err
-}
+// func rotatelog(trapfile *os.File) error {
+// 	t := time.Now()
+// 	err := trapfile.Close()
+// 	if err != nil {
+// 		return err
+// 	}
+// 	err = os.Rename(snmptrappath, snmptrappath+"-"+t.Format("20060102"))
+// 	if err != nil {
+// 		//reopen file
+// 		fmt.Println("reopen file")
+// 		trapfile, _ = os.Open(snmptrappath)
+// 	}
+// 	return err
+// }
 
 func ProcessingLog(trapfile *os.File, offsetfile *os.File, p *kafka.Producer) {
-
-	//ReadLine and send message
-
-	if reopenLogFile(trapfile, trapReader, offset) != true {
-		fmt.Println("Return ...")
-		return
-	}
 
 	//timestamp format message
 	timereg := regexp.MustCompile("[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1]) (2[0-3]|[01][0-9])(:[0-5][0-9]){2}")
@@ -213,7 +206,7 @@ func ProcessingLog(trapfile *os.File, offsetfile *os.File, p *kafka.Producer) {
 			break
 		}
 
-		if timereg.MatchString(firstmsg) {
+		if snmptime := timereg.FindString(firstmsg); len(snmptime) != 0 {
 			for {
 				secondmsg, err := ReadLine(trapReader)
 				if err != nil {
@@ -222,11 +215,12 @@ func ProcessingLog(trapfile *os.File, offsetfile *os.File, p *kafka.Producer) {
 				}
 
 				if snmpmibreg.MatchString(secondmsg) {
-					SendMessageToKafka(firstmsg, secondmsg, p)
+					SendMessageToKafka(snmptime, secondmsg, p)
 					offset += int64(len(secondmsg)) + 1 + int64(len(firstmsg)) + 1 + int64(unknowMsgLen)
 					unknowMsgLen = 0
 					break
 				} else if timereg.MatchString(secondmsg) {
+					snmptime = timereg.FindString(secondmsg)
 					//offset discard len of first timestamp, point to the second timestamp message.
 					offset += int64(len(firstmsg)) + 1 + int64(unknowMsgLen)
 					unknowMsgLen = 0
@@ -295,7 +289,7 @@ func main() {
 		select {
 		case <-tick:
 			ProcessingLog(trapfile, offsetfile, p)
-			isrotate = CheckTimeAndRotateLog(isrotate, trapfile, offsetfile, trapReader)
+			//isrotate = CheckTimeAndRotateLog(isrotate, trapfile, offsetfile, trapReader)
 			//fmt.Println(time.Now().String() + ": Run transformate log at offset: ")
 			fmt.Printf("%s Run Transformate log at offset %v\n", time.Now(), offset)
 		case <-signalc:
