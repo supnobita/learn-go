@@ -1,0 +1,36 @@
+{
+    "version": 1,
+    "partitions": [
+        {
+            "topic": "poc_staging_replicator",
+            "partition": 2,
+            "replicas": [
+                3,1,2
+            ],
+            "log_dirs": [
+                "any",
+                "any", "any"
+            ]
+        },
+        {
+            "topic": "poc_staging_replicator",
+            "partition": 1,
+            "replicas": [
+                2,3,1
+            ],
+            "log_dirs": [
+                "any", "any", "any"
+            ]
+        },
+        {
+            "topic": "poc_staging_replicator",
+            "partition": 0,
+            "replicas": [
+                1,2,3
+            ],
+            "log_dirs": [
+                "any", "any", "any"
+            ]
+        }
+    ]
+}
