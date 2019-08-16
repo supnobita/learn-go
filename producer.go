@@ -9,7 +9,7 @@ import (
 
 func main() {
 
-	p, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": "staging-kafka-1.svr.tiki.services:9092,staging-kafka-2.svr.tiki.services:9092,staging-kafka-3.svr.tiki.services:9092"})
+	p, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": "dev-kafka-1.svr.tiki.services:9092,dev-kafka-2.svr.tiki.services:9092,dev-kafka-3.svr.tiki.services:9092"})
 	if err != nil {
 		panic(err)
 	}
@@ -31,7 +31,7 @@ func main() {
 	}()
 
 	// Produce messages to topic (asynchronously)
-	topic := "poc-reassign-topic"
+	topic := "poc_staging_replicator"
 	fmt.Println("Start sending data to topic %v", topic)
 	for i := 0; i < 100000; i++ {
 		time.Sleep(10 * time.Millisecond)

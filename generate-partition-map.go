@@ -11,7 +11,6 @@ import "strconv"
 import "log"
 import "strings"
 import "errors"
-import "math/rand"
 
 type PartitionMap struct {
 	Version    int         `json:"version"`
@@ -34,10 +33,10 @@ type PreferedLeaderPartition struct {
 }
 
 var (
-	zks         = "staging-kafka-1.svr.tiki.services:2181"
-	brokerCount = 0
-	genRandom   = rand.New(rand.NewSource(time.Now().UnixNano()))
-	throttle    = 20971520
+	zks          = "staging-kafka-1.svr.tiki.services:2181"
+	brokerCount  = 0
+	throttle     int64
+	bumpingSpeed = false
 )
 
 //brokers := "staging-kafka-1.svr.tiki.services:9092"
@@ -120,17 +119,19 @@ func RunAssignPartition(topic string, newPartitionMap PartitionMap) error {
 	//save the map to file
 	execMapData, err := json.Marshal(newPartitionMap)
 	_, err = f.Write(execMapData)
-
-	_, err = exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
-		"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.Itoa(throttle), "--execute").Output()
 	//TODO: remove return in here
 	fmt.Printf("Map after change: %v\n", newPartitionMap)
+
+	out, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
+		"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(throttle, 10), "--execute").Output()
 
 	if err != nil {
 		log.Fatal(err)
 		fmt.Println("Execute Reassign Has Errors")
 		return err
 	}
+
+	fmt.Println(string(out))
 
 	fSuccess := false
 	for fSuccess == false {
@@ -145,9 +146,30 @@ func RunAssignPartition(topic string, newPartitionMap PartitionMap) error {
 		if strings.Contains(string(out), "failed") == true {
 			return errors.New("ERROR: fatal- failed to reassign partition")
 		}
-		fmt.Println(string(out))
-		fmt.Println("Not yet finish, Sleep 1p")
+		//fmt.Println(string(out))
+		fmt.Printf("Not yet finish reassign %s with throttle bw %d, Sleep 1p\n", topic, throttle)
 		time.Sleep(time.Second * 60) //sleep 20s
+		//check time in 00:00 -> 6h, bump speed, if not down speed
+		nHours := time.Now().Hour()
+		if bumpingSpeed == false && nHours >= 0 && nHours <= 5 {
+			//increase speed
+			throttle = throttle * 3
+			output, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
+				"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(throttle, 10), "--execute").Output()
+			if strings.Contains(string(output), "failed") == true || err != nil {
+				return errors.New("ERROR: fatal- Throttle Speed error")
+			}
+			bumpingSpeed = true
+		}
+		if bumpingSpeed == true && nHours >= 5 {
+			throttle = throttle / 3
+			output, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
+				"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(throttle, 10), "--execute").Output()
+			if strings.Contains(string(output), "failed") == true || err != nil {
+				return errors.New("ERROR: fatal- Throttle Speed error")
+			}
+			bumpingSpeed = false
+		}
 	}
 
 	fmt.Printf("-----Success: TOPIC %v reassign successfully---------\n", topic)
@@ -184,7 +206,6 @@ func AddNewSlaveReplica(brokerIds []int, currentPartitionMap PartitionMap) (Part
 		return PartitionMap{}, errors.New("Error100: topic " + currentPartitionMap.Partitions[0].Topic + " has added new Broker in Replicas")
 	}
 	numberOfBroker := len(brokerIds)
-	brokerCount = genRandom.Intn(numberOfBroker)
 	for i, p := range currentPartitionMap.Partitions {
 		tryValue := brokerIds[brokerCount%numberOfBroker]
 		p.Replicas = append(p.Replicas, tryValue)
@@ -209,6 +230,7 @@ func ChangeLeaderPartition(newbroker map[int]int, part_map PartitionMap, topic s
 		}
 		if isFoundNewBroker == false {
 			//if not found new broker in list, may be it not reassign parts to new broker list, so we must manually handle for sure
+			//log.Print("Warnning: None new brokder ids in list of replicas of topic " + topic + " Manually Handle")
 			return errors.New("Warnning: None new brokder ids in list of replicas of topic " + topic + " Manually Handle")
 		}
 		part_map.Partitions[i] = p
@@ -269,7 +291,7 @@ func main() {
 	flag.StringVar(&ptopic, "topic", "", "Topic to change (accept regex)")
 	var cmd string
 	flag.StringVar(&cmd, "cmd", "", "List command, must be: reassign,swapleader,trigger-change-leader")
-	flag.IntVar(&throttle, "throttle", 8000000, "Bandwith throttle")
+	flag.Int64Var(&throttle, "throttle", 8000000, "Bandwith throttle")
 
 	flag.Parse()
 
@@ -337,6 +359,8 @@ func main() {
 			}
 		}
 		break
+	default:
+		fmt.Println("Command not found !!! support: reassign,swaptrigger,trigger-change-leader")
 	}
 
 }
