@@ -46,7 +46,7 @@ var (
 	diskSize     int64
 	//topicStatus = 1 is reassign= done, swap leader = 2,
 	topicStatus    map[string]int
-	statusFileName = "topic-status.json"
+	statusFileName = "topic-status.log"
 )
 
 type PrometheusMetric struct {
@@ -170,19 +170,21 @@ func GetBrokerMetric(prometheusClusterPrefix string) map[int]int64 {
 
 //kafka-topics.sh --zookeeper staging-kafka-1.svr.tiki.services:2181 --list
 func GetTopics(topicReg string) []string {
-	//command := "kafka-topics.sh " + brokers + " --list --topic" + topicReg
-	out, err := exec.Command("bash", "kafka-topics.sh", "--zookeeper", zks, "--list", "--topic", topicReg).Output()
-
-	if err != nil {
-		log.Fatal(err)
-		return nil
-	}
-
-	data := strings.Split(string(out), "\n")
 	var topics []string
-	for _, line := range data {
-		if len(line) != 0 && line != " " {
-			topics = append(topics, line)
+	for _, tp := range strings.Split(topicReg, ",") {
+		//command := "kafka-topics.sh " + brokers + " --list --topic" + topicReg
+		out, err := exec.Command("bash", "kafka-topics.sh", "--zookeeper", zks, "--list", "--topic", tp).Output()
+
+		if err != nil {
+			log.Fatal(err)
+			return nil
+		}
+
+		data := strings.Split(string(out), "\n")
+		for _, line := range data {
+			if len(line) != 0 && line != " " {
+				topics = append(topics, line)
+			}
 		}
 	}
 	return topics
@@ -341,11 +343,24 @@ func RunAssignPartition(topic string, newPartitionMap PartitionMap) error {
 	return nil
 }
 
+func WriteOmitTopicsToFile(text string) {
+	f, err := os.OpenFile("manual-handle-topic.txt",
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Println(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(text + "\n"); err != nil {
+		log.Println(err)
+	}
+}
+
 func AddNewSlaveReplica(brokerIds []int, currentPartitionMap PartitionMap) (PartitionMap, error) {
 	if len(currentPartitionMap.Partitions) == 0 {
 		return PartitionMap{}, errors.New("Warning: Partition map is null")
 	}
 	if len(currentPartitionMap.Partitions[0].Replicas) >= 3 {
+		WriteOmitTopicsToFile(currentPartitionMap.Partitions[0].Topic)
 		return PartitionMap{}, errors.New("Warning: Number of replicas of this topic >= 3, please manually handle it !")
 	}
 	//check which topic we add
@@ -519,7 +534,7 @@ func ReadTopicTrackingStatus(file string) map[string]int {
 	return m
 }
 
-func ReadExecutingMap(file string) (PartitionMap, error) {
+func ReadPartitionMap(file string) (PartitionMap, error) {
 
 	dat, err := ioutil.ReadFile(file)
 	if err != nil {
@@ -563,6 +578,7 @@ func main() {
 			if err == nil || err2 == nil {
 				for i := startID; i <= endID; i++ {
 					brokerIds = append(brokerIds, i)
+					brokerIDMap[i] = 1
 				}
 			} else {
 				log.Println("Parse Broker list Error ", err.Error())
@@ -668,6 +684,19 @@ func main() {
 			}
 		}
 		break
+	case "rollback-leader":
+		for _, tp := range topics {
+			partMap, err := ReadPartitionMap(tp + "-current-map.json")
+			if err != nil {
+				log.Println("Error: Cannot read current-map file of topic ", tp)
+				continue //next topic
+			}
+			err = TriggerChangeLeaderPartitions(tp, partMap, brokerIDMap)
+			if err != nil {
+				log.Println(err)
+			}
+			log.Println("Successfully change leader topic: ", tp)
+		}
 	default:
 		log.Println("Command not found !!! support: reassign,swaptrigger,trigger-change-leader")
 	}
