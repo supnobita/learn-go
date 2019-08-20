@@ -48,6 +48,7 @@ var (
 	//topicStatus = 1 is reassign= done, swap leader = 2,
 	topicStatus    map[string]int
 	statusFileName = "topic-status.log"
+	maxBwPerBroker = int64(25000000) //25MB/s
 )
 
 type PrometheusMetric struct {
@@ -304,6 +305,14 @@ func calculateBandwidthPerBroker(p PartitionMap, numberOfBroker int) int64 {
 	return throttle / (int64)(joinedLeader)
 }
 
+//return the max bandwith if the current bigger than max, else return current BW
+func forceUperBandwidth(bw int64) int64 {
+
+	if bw > maxBwPerBroker {
+		return maxBwPerBroker
+	}
+	return bw
+}
 func RunAssignPartition(topic string, newPartitionMap PartitionMap, numberOfBroker int) error {
 
 	if len(newPartitionMap.Partitions) == 0 {
@@ -322,6 +331,7 @@ func RunAssignPartition(topic string, newPartitionMap PartitionMap, numberOfBrok
 
 	//get throttle bandwidth per broker
 	brokerLimitBandwidth := calculateBandwidthPerBroker(newPartitionMap, numberOfBroker)
+	brokerLimitBandwidth = forceUperBandwidth(brokerLimitBandwidth)
 
 	log.Printf("Map after change: %v\n", newPartitionMap)
 	out, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
@@ -349,6 +359,7 @@ func RunAssignPartition(topic string, newPartitionMap PartitionMap, numberOfBrok
 
 		if isLimitBandwidthChange() {
 			brokerLimitBandwidth = calculateBandwidthPerBroker(newPartitionMap, numberOfBroker)
+			brokerLimitBandwidth = forceUperBandwidth(brokerLimitBandwidth)
 			_, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
 				"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(brokerLimitBandwidth, 10), "--execute").Output()
 			if err == nil {
@@ -364,6 +375,7 @@ func RunAssignPartition(topic string, newPartitionMap PartitionMap, numberOfBrok
 		if bumpingSpeed == false && nHours >= 0 && nHours <= 5 {
 			//increase speed
 			brokerLimitBandwidth = brokerLimitBandwidth * 3
+			brokerLimitBandwidth = forceUperBandwidth(brokerLimitBandwidth)
 			output, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
 				"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(brokerLimitBandwidth, 10), "--execute").Output()
 			if strings.Contains(string(output), "failed") == true || err != nil {
@@ -373,6 +385,7 @@ func RunAssignPartition(topic string, newPartitionMap PartitionMap, numberOfBrok
 		}
 		if bumpingSpeed == true && nHours >= 5 {
 			brokerLimitBandwidth = brokerLimitBandwidth * 3
+			brokerLimitBandwidth = forceUperBandwidth(brokerLimitBandwidth)
 			output, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
 				"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(brokerLimitBandwidth, 10), "--execute").Output()
 			if strings.Contains(string(output), "failed") == true || err != nil {
