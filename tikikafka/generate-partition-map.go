@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -192,7 +193,7 @@ func GetTopics(topicReg string) []string {
 func GetRunningAssignment() (PartitionMap, error) {
 	c, _, err := zkclient.Connect([]string{zks}, time.Second) //*10)
 	if err != nil {
-		panic(err)
+		log.Println("Error when connect zookeeper: ", err)
 	}
 	path := "/admin/reassign_partitions"
 
@@ -272,7 +273,38 @@ func verifyReassignmentStatus(topic_json_file string, newPartitionMap PartitionM
 	return false, nil
 }
 
-func RunAssignPartition(topic string, newPartitionMap PartitionMap) error {
+//true is file limit bandwith change, false is not
+func isLimitBandwidthChange() bool {
+	tempBW, err := ReadBandwithLimitFile()
+	if err == nil {
+		if tempBW != throttle {
+			return true
+		}
+	}
+	return false
+}
+
+func getTotalThrottle() int64 {
+	tempBW, err := ReadBandwithLimitFile()
+	if err == nil {
+		throttle = tempBW
+		return throttle
+	}
+	return throttle
+}
+
+func calculateBandwidthPerBroker(p PartitionMap, numberOfBroker int) int64 {
+	getTotalThrottle()
+	var joinedLeader int
+	if numberOfBroker > len(p.Partitions) {
+		joinedLeader = len(p.Partitions)
+	} else {
+		joinedLeader = numberOfBroker
+	}
+	return throttle / (int64)(joinedLeader)
+}
+
+func RunAssignPartition(topic string, newPartitionMap PartitionMap, numberOfBroker int) error {
 
 	if len(newPartitionMap.Partitions) == 0 {
 		return errors.New("Partition map is null")
@@ -287,11 +319,13 @@ func RunAssignPartition(topic string, newPartitionMap PartitionMap) error {
 	//save the map to file
 	execMapData, err := json.Marshal(newPartitionMap)
 	_, err = f.Write(execMapData)
-	//TODO: remove return in here
-	log.Printf("Map after change: %v\n", newPartitionMap)
 
+	//get throttle bandwidth per broker
+	brokerLimitBandwidth := calculateBandwidthPerBroker(newPartitionMap, numberOfBroker)
+
+	log.Printf("Map after change: %v\n", newPartitionMap)
 	out, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
-		"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(throttle, 10), "--execute").Output()
+		"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(brokerLimitBandwidth, 10), "--execute").Output()
 
 	if err != nil {
 		log.Fatal(err)
@@ -313,25 +347,34 @@ func RunAssignPartition(topic string, newPartitionMap PartitionMap) error {
 			return err
 		}
 
-		log.Printf("Not yet finish reassign %s with throttle bw %d, Sleep 1p\n", topic, throttle)
+		if isLimitBandwidthChange() {
+			brokerLimitBandwidth = calculateBandwidthPerBroker(newPartitionMap, numberOfBroker)
+			_, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
+				"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(brokerLimitBandwidth, 10), "--execute").Output()
+			if err == nil {
+				log.Printf("Change Total Reassignment bandwidth to %d, throttle BW per broker to %d\n", throttle, brokerLimitBandwidth)
+			}
+		}
+
+		log.Printf("Not yet finish reassign %s with Totlal BW %d, per broker BW %d, Sleep 30s\n", topic, throttle, brokerLimitBandwidth)
 		time.Sleep(time.Second * 30) //sleep 30s
 
 		//check time in 00:00 -> 6h, bump speed, if not down speed
 		nHours := time.Now().Hour()
 		if bumpingSpeed == false && nHours >= 0 && nHours <= 5 {
 			//increase speed
-			throttle = throttle * 3
+			brokerLimitBandwidth = brokerLimitBandwidth * 3
 			output, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
-				"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(throttle, 10), "--execute").Output()
+				"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(brokerLimitBandwidth, 10), "--execute").Output()
 			if strings.Contains(string(output), "failed") == true || err != nil {
 				return errors.New("ERROR: fatal- Throttle Speed error")
 			}
 			bumpingSpeed = true
 		}
 		if bumpingSpeed == true && nHours >= 5 {
-			throttle = throttle / 3
+			brokerLimitBandwidth = brokerLimitBandwidth * 3
 			output, err := exec.Command("bash", "kafka-reassign-partitions.sh", "--zookeeper", zks,
-				"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(throttle, 10), "--execute").Output()
+				"--reassignment-json-file", topic+"-exec-map.json", "--throttle", strconv.FormatInt(brokerLimitBandwidth, 10), "--execute").Output()
 			if strings.Contains(string(output), "failed") == true || err != nil {
 				return errors.New("ERROR: fatal- Throttle Speed error")
 			}
@@ -461,7 +504,7 @@ func ChangeLeaderPartition(newbroker map[int]int, part_map PartitionMap, topic s
 	}
 
 	//Apply new map with changed leader partitions
-	return RunAssignPartition(topic, part_map)
+	return RunAssignPartition(topic, part_map, len(newbroker))
 }
 
 func TriggerChangeLeaderPartitions(topic string, part_map PartitionMap, brokerIDMap map[int]int) error {
@@ -532,6 +575,27 @@ func ReadTopicTrackingStatus(file string) map[string]int {
 	m := make(map[string]int)
 	json.Unmarshal(dat, &m)
 	return m
+}
+
+func ReadBandwithLimitFile() (int64, error) {
+	file, err := os.Open("bandwidth.txt")
+	if err != nil {
+		log.Println(err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	var dat string
+	if scanner.Scan() {
+		dat = scanner.Text()
+	}
+
+	result, err := strconv.ParseInt(dat, 10, 64)
+	if err != nil {
+		log.Printf("Error read bandwidth %v\n", err.Error())
+		return -1, err
+	}
+	return result, nil
 }
 
 func ReadPartitionMap(file string) (PartitionMap, error) {
@@ -642,7 +706,7 @@ func main() {
 				log.Print(err)
 				continue // omit RunAssigPartition task
 			}
-			err = RunAssignPartition(tp, newPartitionMap)
+			err = RunAssignPartition(tp, newPartitionMap, len(brokerIDMap))
 			if err != nil {
 				panic(err)
 			}

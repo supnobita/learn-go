@@ -9,7 +9,7 @@ import (
 
 func main() {
 
-	p, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": "dev-kafka-1.svr.tiki.services:9092,dev-kafka-2.svr.tiki.services:9092,dev-kafka-3.svr.tiki.services:9092"})
+	p, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": "dev-kafka-1.svr.tiki.services:9092", "acks": "all"})
 	if err != nil {
 		panic(err)
 	}
@@ -31,11 +31,11 @@ func main() {
 	}()
 
 	// Produce messages to topic (asynchronously)
-	topic := "poc_staging_replicator"
+	topic := "poc_replicator_topic"
 	fmt.Println("Start sending data to topic %v", topic)
 	for i := 0; i < 100000; i++ {
 		time.Sleep(10 * time.Millisecond)
-		word := fmt.Sprintf("Test kafka, test replicator %d", i)
+		word := fmt.Sprintf("Test kafka, test replicator Test kafka, test replicator Test kafka, test replicatorTest kafka, test replicatorTest kafka, test replicatorTest kafka, test replicatorTest kafka, test replicatorTest kafka, test replicatorTest kafka, test replicatorTest kafka, test replicatorTest kafka, test replicatorTest kafka, test replicatorTest kafka, test replicatorTest kafka, test replicator Test kafka, test replicator %d", i)
 		//fmt.Println("Data: ", word)
 		p.Produce(&kafka.Message{
 			TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
